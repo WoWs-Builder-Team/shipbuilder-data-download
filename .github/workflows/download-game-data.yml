@@ -223,46 +223,10 @@ jobs:
           echo "bundle=$VERSION.zip" >> "$GITHUB_OUTPUT"
 
       - name: Upload game data bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # uploads the zip as-is, so it does not end up nested in another zip
           path: ${{ steps.bundle.outputs.bundle }}
           archive: false
           retention-days: 3
           if-no-files-found: error
-
-      - name: Print downloaded files
-        if: always()
-        env:
-          GAMEDATA: ${{ steps.idx.outputs.gamedata }}
-        run: |
-          for dir in "$GAMEDATA" extracted; do
-            if [ -z "$dir" ] || [ ! -d "$dir" ]; then
-              echo "Directory missing: ${dir:-<not set>}"
-              continue
-            fi
-            echo "::group::$dir ($(du -sh "$dir" | cut -f1) in $(find "$dir" -type f | wc -l) files)"
-            if command -v tree > /dev/null; then
-              tree -ah "$dir"
-            else
-              find "$dir" -type f -printf '%10s  %p\n' | sort -k2
-            fi
-            echo "::endgroup::"
-          done
-
-      - name: Print filter files
-        if: always()
-        env:
-          FILTER: ${{ steps.filter.outputs.filter }}
-          PKGS: ${{ steps.pkgs.outputs.pkgs }}
-          RES_FILTER: ${{ steps.res.outputs.filter }}
-        run: |
-          for filter in "$FILTER" "$PKGS" "$RES_FILTER"; do
-            if [ -n "$filter" ] && [ -f "$filter" ]; then
-              echo "::group::$filter ($(wc -l < "$filter") entries)"
-              cat "$filter"
-              echo "::endgroup::"
-            else
-              echo "Filter file missing: ${filter:-<not set>}"
-            fi
-          done
