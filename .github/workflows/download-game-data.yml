@@ -6,10 +6,15 @@ on:
         required: true
         type: string
         description: The current version of the game
+      modifiers-url:
+        required: false
+        type: string
+        description: Optional URL to a custom Modifiers.json, defaults to the one from the DataConverter repository
 
 env:
   WOWS_APP: 552990
   WOWS_CLIENT_DEPOT: 552993
+  WOWS_RES_DEPOT: 552994
   WOWS_TOOLKIT_TAG: v1.0.1
   WOWS_TOOLKIT_TOOLS_SHA256: d03ac918b7ec9514bb59fa49432132c69103ecb19f121c74d0ed7da2d438cf5b
 
@@ -148,6 +153,84 @@ jobs:
           echo "Extracted $gameparams ($(du -h "$gameparams" | cut -f1))"
           echo "gameparams=$gameparams" >> "$GITHUB_OUTPUT"
 
+      - name: Download res files
+        id: res
+        env:
+          DOWNLOADER: ${{ steps.downloader.outputs.downloader }}
+          IDX_DIR: ${{ steps.pkgs.outputs.idx_dir }}
+        run: |
+          build=$(basename "$(dirname "$IDX_DIR")")
+          echo "Using build: $build"
+          {
+            echo "regex:^bin/$build/res/texts/.*"
+            echo "bin/$build/res/gui/lobby/shipstree_EU.xml"
+          } > res-files.txt
+          $DOWNLOADER -app $WOWS_APP -depot $WOWS_RES_DEPOT \
+            -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} \
+            -filelist res-files.txt -dir gamedata
+          texts="gamedata/bin/$build/res/texts"
+          shipstree="gamedata/bin/$build/res/gui/lobby/shipstree_EU.xml"
+          if [ ! -d "$texts" ] || [ -z "$(ls -A "$texts")" ]; then
+            echo "::error::No files were downloaded below $texts"
+            exit 1
+          fi
+          if [ ! -f "$shipstree" ]; then
+            echo "::error::$shipstree was not downloaded"
+            exit 1
+          fi
+          echo "Downloaded $(find "$texts" -type f | wc -l) files below $texts"
+          echo "texts=$texts" >> "$GITHUB_OUTPUT"
+          echo "shipstree=$shipstree" >> "$GITHUB_OUTPUT"
+          echo "filter=res-files.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Download Modifiers.json
+        id: modifiers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODIFIERS_URL: ${{ inputs.modifiers-url }}
+        run: |
+          if [ -n "$MODIFIERS_URL" ]; then
+            echo "Using custom modifiers file: $MODIFIERS_URL"
+            curl -fsSL "$MODIFIERS_URL" -o Modifiers.json
+          else
+            # without a ref, the contents api serves the default branch
+            echo "Using Modifiers.json from the DataConverter default branch"
+            gh api repos/WoWs-Builder-Team/DataConverter/contents/DataConverter/JsonData/Modifiers.json \
+              -H "Accept: application/vnd.github.raw" > Modifiers.json
+          fi
+          jq empty Modifiers.json
+          echo "Downloaded Modifiers.json ($(du -h Modifiers.json | cut -f1))"
+          echo "modifiers=Modifiers.json" >> "$GITHUB_OUTPUT"
+
+      - name: Bundle game data
+        id: bundle
+        env:
+          VERSION: ${{ inputs.game-version }}
+          TEXTS: ${{ steps.res.outputs.texts }}
+          SHIPSTREE: ${{ steps.res.outputs.shipstree }}
+          GAMEPARAMS: ${{ steps.extract.outputs.gameparams }}
+          MODIFIERS: ${{ steps.modifiers.outputs.modifiers }}
+        run: |
+          rm -rf bundle
+          mkdir -p bundle
+          cp -r "$TEXTS" bundle/texts
+          cp "$GAMEPARAMS" bundle/GameParams.data
+          cp "$MODIFIERS" bundle/Modifiers.json
+          cp "$SHIPSTREE" bundle/shipstree_EU.xml
+          (cd bundle && zip -9 -r -q "../$VERSION.zip" texts GameParams.data Modifiers.json shipstree_EU.xml)
+          echo "Created $VERSION.zip ($(du -h "$VERSION.zip" | cut -f1))"
+          unzip -l "$VERSION.zip"
+          echo "bundle=$VERSION.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Upload game data bundle
+        uses: actions/upload-artifact@v7
+        with:
+          # uploads the zip as-is, so it does not end up nested in another zip
+          path: ${{ steps.bundle.outputs.bundle }}
+          archive: false
+          retention-days: 3
+          if-no-files-found: error
+
       - name: Print downloaded files
         if: always()
         env:
@@ -172,8 +255,9 @@ jobs:
         env:
           FILTER: ${{ steps.filter.outputs.filter }}
           PKGS: ${{ steps.pkgs.outputs.pkgs }}
+          RES_FILTER: ${{ steps.res.outputs.filter }}
         run: |
-          for filter in "$FILTER" "$PKGS"; do
+          for filter in "$FILTER" "$PKGS" "$RES_FILTER"; do
             if [ -n "$filter" ] && [ -f "$filter" ]; then
               echo "::group::$filter ($(wc -l < "$filter") entries)"
               cat "$filter"
