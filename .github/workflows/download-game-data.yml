@@ -136,9 +136,11 @@ jobs:
           GAMEDATA: ${{ steps.idx.outputs.gamedata }}
           IDX_DIR: ${{ steps.pkgs.outputs.idx_dir }}
         run: |
+          # extract matches globs against the raw file tree paths, which carry a
+          # leading slash - unlike pkgs, which strips it from both sides
           "$WOWSUNPACK" --idx-files "$IDX_DIR" --pkg-dir "$GAMEDATA/res_packages" \
-            extract --out-dir extracted content/GameParams.data
-          gameparams=$(find extracted -type f -name GameParams.data | head -n 1)
+            extract --out-dir extracted /content/GameParams.data
+          gameparams=$(find extracted -type f -name GameParams.data 2> /dev/null | head -n 1)
           if [ -z "$gameparams" ]; then
             echo "::error::GameParams.data was not extracted"
             exit 1
