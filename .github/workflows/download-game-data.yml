@@ -104,6 +104,7 @@ jobs:
             exit 1
           fi
           echo "Using idx directory: $idx_dir"
+          echo "idx_dir=$idx_dir" >> "$GITHUB_OUTPUT"
           "$WOWSUNPACK" -i "$idx_dir" pkgs "content/GameParams.data" \
             | sed -e 's/\r$//' -e '/^$/d' -e 's#^#res_packages/#' \
             | sort -u > pkgs.txt
@@ -128,21 +129,41 @@ jobs:
             -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} \
             -filelist "$PKGS" -dir gamedata
 
+      - name: Extract GameParams.data
+        id: extract
+        env:
+          WOWSUNPACK: ${{ steps.wowsunpack.outputs.wowsunpack }}
+          GAMEDATA: ${{ steps.idx.outputs.gamedata }}
+          IDX_DIR: ${{ steps.pkgs.outputs.idx_dir }}
+        run: |
+          "$WOWSUNPACK" --idx-files "$IDX_DIR" --pkg-dir "$GAMEDATA/res_packages" \
+            extract --out-dir extracted content/GameParams.data
+          gameparams=$(find extracted -type f -name GameParams.data | head -n 1)
+          if [ -z "$gameparams" ]; then
+            echo "::error::GameParams.data was not extracted"
+            exit 1
+          fi
+          echo "Extracted $gameparams ($(du -h "$gameparams" | cut -f1))"
+          echo "gameparams=$gameparams" >> "$GITHUB_OUTPUT"
+
       - name: Print downloaded files
         if: always()
         env:
           GAMEDATA: ${{ steps.idx.outputs.gamedata }}
         run: |
-          if [ -z "$GAMEDATA" ] || [ ! -d "$GAMEDATA" ]; then
-            echo "Nothing downloaded: ${GAMEDATA:-<not set>} does not exist"
-            exit 0
-          fi
-          echo "Total size: $(du -sh "$GAMEDATA" | cut -f1) in $(find "$GAMEDATA" -type f | wc -l) files"
-          if command -v tree > /dev/null; then
-            tree -ah "$GAMEDATA"
-          else
-            find "$GAMEDATA" -type f -printf '%10s  %p\n' | sort -k2
-          fi
+          for dir in "$GAMEDATA" extracted; do
+            if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+              echo "Directory missing: ${dir:-<not set>}"
+              continue
+            fi
+            echo "::group::$dir ($(du -sh "$dir" | cut -f1) in $(find "$dir" -type f | wc -l) files)"
+            if command -v tree > /dev/null; then
+              tree -ah "$dir"
+            else
+              find "$dir" -type f -printf '%10s  %p\n' | sort -k2
+            fi
+            echo "::endgroup::"
+          done
 
       - name: Print filter files
         if: always()
