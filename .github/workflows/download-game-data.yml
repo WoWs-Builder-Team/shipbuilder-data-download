@@ -1,0 +1,161 @@
+name: Download GameData
+on:
+  workflow_dispatch:
+    inputs:
+      game-version:
+        required: true
+        type: string
+        description: The current version of the game
+
+env:
+  WOWS_APP: 552990
+  WOWS_CLIENT_DEPOT: 552993
+  WOWS_TOOLKIT_TAG: v1.0.1
+  WOWS_TOOLKIT_TOOLS_SHA256: d03ac918b7ec9514bb59fa49432132c69103ecb19f121c74d0ed7da2d438cf5b
+
+jobs:
+  download-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download steam depot downloader
+        id: downloader
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPOT_DOWNLOADER_TAG: DepotDownloader_3.4.0
+        run: |
+          mkdir -p depotdownloader
+          gh release download $DEPOT_DOWNLOADER_TAG --repo SteamRE/DepotDownloader --pattern 'DepotDownloader-linux-x64.zip' --output depotdownloader.zip
+          unzip -q depotdownloader.zip -d depotdownloader
+          chmod +x depotdownloader/DepotDownloader
+          rm depotdownloader.zip
+          echo "downloader=depotdownloader/DepotDownloader" >> "$GITHUB_OUTPUT"
+
+      - name: Setup wowsunpack
+        id: wowsunpack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="wows_toolkit_tools_${WOWS_TOOLKIT_TAG}_linux64.zip"
+          gh release download "$WOWS_TOOLKIT_TAG" --repo landaire/wows-toolkit --pattern "$asset" --output toolkit-tools.zip
+          echo "$WOWS_TOOLKIT_TOOLS_SHA256  toolkit-tools.zip" | sha256sum --check --strict
+          mkdir -p wowstoolkit
+          unzip -q toolkit-tools.zip -d wowstoolkit
+          rm toolkit-tools.zip
+          wowsunpack=$(find wowstoolkit -type f -name 'wowsunpack' | sort | head -n 1)
+          if [ -z "$wowsunpack" ]; then
+            echo "::error::No wowsunpack binary found in $asset"
+            exit 1
+          fi
+          chmod +x "$wowsunpack"
+          echo "Found wowsunpack: $wowsunpack"
+          echo "wowsunpack=$wowsunpack" >> "$GITHUB_OUTPUT"
+
+      - name: Download manifest file
+        id: manifest
+        env:
+          DOWNLOADER: ${{ steps.downloader.outputs.downloader }}
+        run: |
+          $DOWNLOADER -app $WOWS_APP -depot $WOWS_CLIENT_DEPOT -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} -manifest-only
+          manifest=$(find "depots/$WOWS_CLIENT_DEPOT" -type f -name "manifest_${WOWS_CLIENT_DEPOT}_*.txt" | sort | tail -n 1)
+          if [ -z "$manifest" ]; then
+            echo "::error::No manifest file found below depots/$WOWS_CLIENT_DEPOT"
+            exit 1
+          fi
+          echo "Found manifest: $manifest"
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+
+      - name: Create idx download filter
+        id: filter
+        env:
+          MANIFEST: ${{ steps.manifest.outputs.manifest }}
+        run: |
+          grep -oE "bin/[0-9]+/idx/.*" "$MANIFEST" | sort -u > files.txt
+          count=$(wc -l < files.txt)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No idx files matched in $MANIFEST"
+            exit 1
+          fi
+          echo "Matched $count idx files"
+          echo "filter=files.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Download idx files
+        id: idx
+        env:
+          DOWNLOADER: ${{ steps.downloader.outputs.downloader }}
+          MANIFEST: ${{ steps.manifest.outputs.manifest }}
+          FILTER: ${{ steps.filter.outputs.filter }}
+        run: |
+          manifest_id=$(basename "$MANIFEST" .txt)
+          manifest_id=${manifest_id##*_}
+          $DOWNLOADER -app $WOWS_APP -depot $WOWS_CLIENT_DEPOT -manifest $manifest_id \
+            -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} \
+            -filelist "$FILTER" -dir gamedata
+          echo "gamedata=gamedata" >> "$GITHUB_OUTPUT"
+
+      - name: Find required pkg files
+        id: pkgs
+        env:
+          WOWSUNPACK: ${{ steps.wowsunpack.outputs.wowsunpack }}
+          GAMEDATA: ${{ steps.idx.outputs.gamedata }}
+        run: |
+          idx_dir=$(find "$GAMEDATA/bin" -mindepth 2 -maxdepth 2 -type d -name idx | sort -V | tail -n 1)
+          if [ -z "$idx_dir" ]; then
+            echo "::error::No idx directory found below $GAMEDATA/bin"
+            exit 1
+          fi
+          echo "Using idx directory: $idx_dir"
+          "$WOWSUNPACK" -i "$idx_dir" pkgs "content/GameParams.data" \
+            | sed -e 's/\r$//' -e '/^$/d' -e 's#^#res_packages/#' \
+            | sort -u > pkgs.txt
+          count=$(wc -l < pkgs.txt)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No pkg files found for content/GameParams.data below $idx_dir"
+            exit 1
+          fi
+          echo "Found $count pkg file(s):"
+          cat pkgs.txt
+          echo "pkgs=pkgs.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Download pkg files
+        env:
+          DOWNLOADER: ${{ steps.downloader.outputs.downloader }}
+          MANIFEST: ${{ steps.manifest.outputs.manifest }}
+          PKGS: ${{ steps.pkgs.outputs.pkgs }}
+        run: |
+          manifest_id=$(basename "$MANIFEST" .txt)
+          manifest_id=${manifest_id##*_}
+          $DOWNLOADER -app $WOWS_APP -depot $WOWS_CLIENT_DEPOT -manifest $manifest_id \
+            -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} \
+            -filelist "$PKGS" -dir gamedata
+
+      - name: Print downloaded files
+        if: always()
+        env:
+          GAMEDATA: ${{ steps.idx.outputs.gamedata }}
+        run: |
+          if [ -z "$GAMEDATA" ] || [ ! -d "$GAMEDATA" ]; then
+            echo "Nothing downloaded: ${GAMEDATA:-<not set>} does not exist"
+            exit 0
+          fi
+          echo "Total size: $(du -sh "$GAMEDATA" | cut -f1) in $(find "$GAMEDATA" -type f | wc -l) files"
+          if command -v tree > /dev/null; then
+            tree -ah "$GAMEDATA"
+          else
+            find "$GAMEDATA" -type f -printf '%10s  %p\n' | sort -k2
+          fi
+
+      - name: Print filter files
+        if: always()
+        env:
+          FILTER: ${{ steps.filter.outputs.filter }}
+          PKGS: ${{ steps.pkgs.outputs.pkgs }}
+        run: |
+          for filter in "$FILTER" "$PKGS"; do
+            if [ -n "$filter" ] && [ -f "$filter" ]; then
+              echo "::group::$filter ($(wc -l < "$filter") entries)"
+              cat "$filter"
+              echo "::endgroup::"
+            else
+              echo "Filter file missing: ${filter:-<not set>}"
+            fi
+          done
