@@ -1,0 +1,61 @@
+name: Setup release tool
+description: Downloads a tool from a github release, verifies its checksum and locates its executable
+
+inputs:
+  repository:
+    required: true
+    description: Repository to download the release asset from
+  tag:
+    required: true
+    description: Release tag to download the asset from
+  asset:
+    required: true
+    description: Name of the release asset containing the tool
+  binary:
+    required: true
+    description: Name of the executable within the release asset
+  sha256:
+    required: false
+    description: Expected sha256 checksum of the release asset, verification is skipped if empty
+  token:
+    required: false
+    default: ${{ github.token }}
+    description: Token used to download the release asset
+
+outputs:
+  path:
+    value: ${{ steps.setup.outputs.path }}
+    description: Path to the downloaded executable
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        TAG: ${{ inputs.tag }}
+        ASSET: ${{ inputs.asset }}
+        BINARY: ${{ inputs.binary }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        target="tools/$BINARY"
+        archive="$target.zip"
+        mkdir -p "$target"
+        gh release download "$TAG" --repo "$REPOSITORY" --pattern "$ASSET" --output "$archive"
+        if [ -n "$SHA256" ]; then
+          echo "$SHA256  $archive" | sha256sum --check --strict
+        else
+          echo "No checksum given for $ASSET, skipping verification"
+        fi
+        unzip -q "$archive" -d "$target"
+        rm "$archive"
+        path=$(find "$target" -type f -name "$BINARY" | sort | head -n 1)
+        if [ -z "$path" ]; then
+          echo "::error::No $BINARY executable found in $ASSET"
+          exit 1
+        fi
+        chmod +x "$path"
+        echo "Found $BINARY: $path"
+        echo "path=$path" >> "$GITHUB_OUTPUT"

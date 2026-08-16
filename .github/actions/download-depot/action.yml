@@ -1,0 +1,91 @@
+name: Download depot files
+description: Downloads files from a steam depot using DepotDownloader
+
+inputs:
+  downloader:
+    required: true
+    description: Path to the DepotDownloader executable
+  app:
+    required: true
+    description: Id of the steam app
+  depot:
+    required: true
+    description: Id of the steam depot to download from
+  username:
+    required: true
+    description: Steam username
+  password:
+    required: true
+    description: Steam password
+  manifest:
+    required: false
+    description: Manifest id to pin the download to, defaults to the latest manifest
+  filelist:
+    required: false
+    description: File listing the paths to download, defaults to the whole depot
+  directory:
+    required: false
+    description: Directory to download the files into
+  manifest-only:
+    required: false
+    default: 'false'
+    description: Download the manifest instead of the depot content
+
+outputs:
+  manifest-file:
+    value: ${{ steps.manifest.outputs.file }}
+    description: Path to the downloaded manifest file, only set if manifest-only is enabled
+  manifest-id:
+    value: ${{ steps.manifest.outputs.id }}
+    description: Id of the downloaded manifest, only set if manifest-only is enabled
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        DOWNLOADER: ${{ inputs.downloader }}
+        APP: ${{ inputs.app }}
+        DEPOT: ${{ inputs.depot }}
+        USERNAME: ${{ inputs.username }}
+        PASSWORD: ${{ inputs.password }}
+        MANIFEST: ${{ inputs.manifest }}
+        FILELIST: ${{ inputs.filelist }}
+        DIRECTORY: ${{ inputs.directory }}
+        MANIFEST_ONLY: ${{ inputs.manifest-only }}
+      run: |
+        args=(-app "$APP" -depot "$DEPOT" -username "$USERNAME" -password "$PASSWORD")
+        if [ -n "$MANIFEST" ]; then
+          args+=(-manifest "$MANIFEST")
+        fi
+        if [ -n "$FILELIST" ]; then
+          args+=(-filelist "$FILELIST")
+        fi
+        if [ -n "$DIRECTORY" ]; then
+          args+=(-dir "$DIRECTORY")
+        fi
+        if [ "$MANIFEST_ONLY" = "true" ]; then
+          args+=(-manifest-only)
+        fi
+        "$DOWNLOADER" "${args[@]}"
+
+    - id: manifest
+      if: ${{ inputs.manifest-only == 'true' }}
+      shell: bash
+      env:
+        DEPOT: ${{ inputs.depot }}
+        DIRECTORY: ${{ inputs.directory }}
+      run: |
+        # the manifest file name carries the depot id, so it can be located
+        # below the download directory regardless of the build it belongs to
+        search_dir="${DIRECTORY:-depots}"
+        file=$(find "$search_dir" -type f -name "manifest_${DEPOT}_*.txt" | sort | tail -n 1)
+        if [ -z "$file" ]; then
+          echo "::error::No manifest file for depot $DEPOT found below $search_dir"
+          exit 1
+        fi
+        id=$(basename "$file" .txt)
+        id=${id##*_}
+        echo "Found manifest $id: $file"
+        echo "file=$file" >> "$GITHUB_OUTPUT"
+        echo "id=$id" >> "$GITHUB_OUTPUT"

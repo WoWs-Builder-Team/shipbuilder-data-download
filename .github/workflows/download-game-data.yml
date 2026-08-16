@@ -15,6 +15,9 @@ env:
   WOWS_APP: 552990
   WOWS_CLIENT_DEPOT: 552993
   WOWS_RES_DEPOT: 552994
+  GAMEDATA: gamedata
+  ARTIFACT_RETENTION_DAYS: 3
+  DEPOT_DOWNLOADER_TAG: DepotDownloader_3.4.0
   WOWS_TOOLKIT_TAG: v1.0.1
   WOWS_TOOLKIT_TOOLS_SHA256: d03ac918b7ec9514bb59fa49432132c69103ecb19f121c74d0ed7da2d438cf5b
 
@@ -22,57 +25,43 @@ jobs:
   download-data:
     runs-on: ubuntu-latest
     steps:
-      - name: Download steam depot downloader
+      - name: Check out composite actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup steam depot downloader
         id: downloader
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEPOT_DOWNLOADER_TAG: DepotDownloader_3.4.0
-        run: |
-          mkdir -p depotdownloader
-          gh release download $DEPOT_DOWNLOADER_TAG --repo SteamRE/DepotDownloader --pattern 'DepotDownloader-linux-x64.zip' --output depotdownloader.zip
-          unzip -q depotdownloader.zip -d depotdownloader
-          chmod +x depotdownloader/DepotDownloader
-          rm depotdownloader.zip
-          echo "downloader=depotdownloader/DepotDownloader" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/setup-release-tool
+        with:
+          repository: SteamRE/DepotDownloader
+          tag: ${{ env.DEPOT_DOWNLOADER_TAG }}
+          asset: DepotDownloader-linux-x64.zip
+          binary: DepotDownloader
 
       - name: Setup wowsunpack
         id: wowsunpack
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          asset="wows_toolkit_tools_${WOWS_TOOLKIT_TAG}_linux64.zip"
-          gh release download "$WOWS_TOOLKIT_TAG" --repo landaire/wows-toolkit --pattern "$asset" --output toolkit-tools.zip
-          echo "$WOWS_TOOLKIT_TOOLS_SHA256  toolkit-tools.zip" | sha256sum --check --strict
-          mkdir -p wowstoolkit
-          unzip -q toolkit-tools.zip -d wowstoolkit
-          rm toolkit-tools.zip
-          wowsunpack=$(find wowstoolkit -type f -name 'wowsunpack' | sort | head -n 1)
-          if [ -z "$wowsunpack" ]; then
-            echo "::error::No wowsunpack binary found in $asset"
-            exit 1
-          fi
-          chmod +x "$wowsunpack"
-          echo "Found wowsunpack: $wowsunpack"
-          echo "wowsunpack=$wowsunpack" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/setup-release-tool
+        with:
+          repository: landaire/wows-toolkit
+          tag: ${{ env.WOWS_TOOLKIT_TAG }}
+          asset: wows_toolkit_tools_${{ env.WOWS_TOOLKIT_TAG }}_linux64.zip
+          binary: wowsunpack
+          sha256: ${{ env.WOWS_TOOLKIT_TOOLS_SHA256 }}
 
       - name: Download manifest file
         id: manifest
-        env:
-          DOWNLOADER: ${{ steps.downloader.outputs.downloader }}
-        run: |
-          $DOWNLOADER -app $WOWS_APP -depot $WOWS_CLIENT_DEPOT -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} -manifest-only
-          manifest=$(find "depots/$WOWS_CLIENT_DEPOT" -type f -name "manifest_${WOWS_CLIENT_DEPOT}_*.txt" | sort | tail -n 1)
-          if [ -z "$manifest" ]; then
-            echo "::error::No manifest file found below depots/$WOWS_CLIENT_DEPOT"
-            exit 1
-          fi
-          echo "Found manifest: $manifest"
-          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/download-depot
+        with:
+          downloader: ${{ steps.downloader.outputs.path }}
+          app: ${{ env.WOWS_APP }}
+          depot: ${{ env.WOWS_CLIENT_DEPOT }}
+          username: ${{ secrets.STEAM_USERNAME }}
+          password: ${{ secrets.STEAM_PASSWORD }}
+          manifest-only: true
 
       - name: Create idx download filter
         id: filter
         env:
-          MANIFEST: ${{ steps.manifest.outputs.manifest }}
+          MANIFEST: ${{ steps.manifest.outputs.manifest-file }}
         run: |
           grep -oE "bin/[0-9]+/idx/.*" "$MANIFEST" | sort -u > files.txt
           count=$(wc -l < files.txt)
@@ -84,24 +73,21 @@ jobs:
           echo "filter=files.txt" >> "$GITHUB_OUTPUT"
 
       - name: Download idx files
-        id: idx
-        env:
-          DOWNLOADER: ${{ steps.downloader.outputs.downloader }}
-          MANIFEST: ${{ steps.manifest.outputs.manifest }}
-          FILTER: ${{ steps.filter.outputs.filter }}
-        run: |
-          manifest_id=$(basename "$MANIFEST" .txt)
-          manifest_id=${manifest_id##*_}
-          $DOWNLOADER -app $WOWS_APP -depot $WOWS_CLIENT_DEPOT -manifest $manifest_id \
-            -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} \
-            -filelist "$FILTER" -dir gamedata
-          echo "gamedata=gamedata" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/download-depot
+        with:
+          downloader: ${{ steps.downloader.outputs.path }}
+          app: ${{ env.WOWS_APP }}
+          depot: ${{ env.WOWS_CLIENT_DEPOT }}
+          username: ${{ secrets.STEAM_USERNAME }}
+          password: ${{ secrets.STEAM_PASSWORD }}
+          manifest: ${{ steps.manifest.outputs.manifest-id }}
+          filelist: ${{ steps.filter.outputs.filter }}
+          directory: ${{ env.GAMEDATA }}
 
       - name: Find required pkg files
         id: pkgs
         env:
-          WOWSUNPACK: ${{ steps.wowsunpack.outputs.wowsunpack }}
-          GAMEDATA: ${{ steps.idx.outputs.gamedata }}
+          WOWSUNPACK: ${{ steps.wowsunpack.outputs.path }}
         run: |
           idx_dir=$(find "$GAMEDATA/bin" -mindepth 2 -maxdepth 2 -type d -name idx | sort -V | tail -n 1)
           if [ -z "$idx_dir" ]; then
@@ -123,22 +109,21 @@ jobs:
           echo "pkgs=pkgs.txt" >> "$GITHUB_OUTPUT"
 
       - name: Download pkg files
-        env:
-          DOWNLOADER: ${{ steps.downloader.outputs.downloader }}
-          MANIFEST: ${{ steps.manifest.outputs.manifest }}
-          PKGS: ${{ steps.pkgs.outputs.pkgs }}
-        run: |
-          manifest_id=$(basename "$MANIFEST" .txt)
-          manifest_id=${manifest_id##*_}
-          $DOWNLOADER -app $WOWS_APP -depot $WOWS_CLIENT_DEPOT -manifest $manifest_id \
-            -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} \
-            -filelist "$PKGS" -dir gamedata
+        uses: ./.github/actions/download-depot
+        with:
+          downloader: ${{ steps.downloader.outputs.path }}
+          app: ${{ env.WOWS_APP }}
+          depot: ${{ env.WOWS_CLIENT_DEPOT }}
+          username: ${{ secrets.STEAM_USERNAME }}
+          password: ${{ secrets.STEAM_PASSWORD }}
+          manifest: ${{ steps.manifest.outputs.manifest-id }}
+          filelist: ${{ steps.pkgs.outputs.pkgs }}
+          directory: ${{ env.GAMEDATA }}
 
       - name: Extract GameParams.data
         id: extract
         env:
-          WOWSUNPACK: ${{ steps.wowsunpack.outputs.wowsunpack }}
-          GAMEDATA: ${{ steps.idx.outputs.gamedata }}
+          WOWSUNPACK: ${{ steps.wowsunpack.outputs.path }}
           IDX_DIR: ${{ steps.pkgs.outputs.idx_dir }}
         run: |
           # extract matches globs against the raw file tree paths, which carry a
@@ -153,10 +138,9 @@ jobs:
           echo "Extracted $gameparams ($(du -h "$gameparams" | cut -f1))"
           echo "gameparams=$gameparams" >> "$GITHUB_OUTPUT"
 
-      - name: Download res files
+      - name: Create res download filter
         id: res
         env:
-          DOWNLOADER: ${{ steps.downloader.outputs.downloader }}
           IDX_DIR: ${{ steps.pkgs.outputs.idx_dir }}
         run: |
           build=$(basename "$(dirname "$IDX_DIR")")
@@ -165,23 +149,36 @@ jobs:
             echo "regex:^bin/$build/res/texts/.*"
             echo "bin/$build/res/gui/lobby/shipstree_EU.xml"
           } > res-files.txt
-          $DOWNLOADER -app $WOWS_APP -depot $WOWS_RES_DEPOT \
-            -username ${{ secrets.STEAM_USERNAME }} -password ${{ secrets.STEAM_PASSWORD }} \
-            -filelist res-files.txt -dir gamedata
-          texts="gamedata/bin/$build/res/texts"
-          shipstree="gamedata/bin/$build/res/gui/lobby/shipstree_EU.xml"
-          if [ ! -d "$texts" ] || [ -z "$(ls -A "$texts")" ]; then
-            echo "::error::No files were downloaded below $texts"
-            exit 1
-          fi
-          if [ ! -f "$shipstree" ]; then
-            echo "::error::$shipstree was not downloaded"
-            exit 1
-          fi
-          echo "Downloaded $(find "$texts" -type f | wc -l) files below $texts"
-          echo "texts=$texts" >> "$GITHUB_OUTPUT"
-          echo "shipstree=$shipstree" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "filter=res-files.txt" >> "$GITHUB_OUTPUT"
+          echo "texts=$GAMEDATA/bin/$build/res/texts" >> "$GITHUB_OUTPUT"
+          echo "shipstree=$GAMEDATA/bin/$build/res/gui/lobby/shipstree_EU.xml" >> "$GITHUB_OUTPUT"
+
+      - name: Download res files
+        uses: ./.github/actions/download-depot
+        with:
+          downloader: ${{ steps.downloader.outputs.path }}
+          app: ${{ env.WOWS_APP }}
+          depot: ${{ env.WOWS_RES_DEPOT }}
+          username: ${{ secrets.STEAM_USERNAME }}
+          password: ${{ secrets.STEAM_PASSWORD }}
+          filelist: ${{ steps.res.outputs.filter }}
+          directory: ${{ env.GAMEDATA }}
+
+      - name: Verify res files
+        env:
+          TEXTS: ${{ steps.res.outputs.texts }}
+          SHIPSTREE: ${{ steps.res.outputs.shipstree }}
+        run: |
+          if [ ! -d "$TEXTS" ] || [ -z "$(ls -A "$TEXTS")" ]; then
+            echo "::error::No files were downloaded below $TEXTS"
+            exit 1
+          fi
+          if [ ! -f "$SHIPSTREE" ]; then
+            echo "::error::$SHIPSTREE was not downloaded"
+            exit 1
+          fi
+          echo "Downloaded $(find "$TEXTS" -type f | wc -l) files below $TEXTS"
 
       - name: Download Modifiers.json
         id: modifiers
@@ -192,11 +189,13 @@ jobs:
           if [ -n "$MODIFIERS_URL" ]; then
             echo "Using custom modifiers file: $MODIFIERS_URL"
             curl -fsSL "$MODIFIERS_URL" -o Modifiers.json
+            echo "source=$MODIFIERS_URL" >> "$GITHUB_OUTPUT"
           else
             # without a ref, the contents api serves the default branch
             echo "Using Modifiers.json from the DataConverter default branch"
             gh api repos/WoWs-Builder-Team/DataConverter/contents/DataConverter/JsonData/Modifiers.json \
               -H "Accept: application/vnd.github.raw" > Modifiers.json
+            echo "source=WoWs-Builder-Team/DataConverter (default branch)" >> "$GITHUB_OUTPUT"
           fi
           jq empty Modifiers.json
           echo "Downloaded Modifiers.json ($(du -h Modifiers.json | cut -f1))"
@@ -223,10 +222,58 @@ jobs:
           echo "bundle=$VERSION.zip" >> "$GITHUB_OUTPUT"
 
       - name: Upload game data bundle
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # uploads the zip as-is, so it does not end up nested in another zip
           path: ${{ steps.bundle.outputs.bundle }}
           archive: false
-          retention-days: 3
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
+
+      - name: Write job summary
+        env:
+          VERSION: ${{ inputs.game-version }}
+          BUILD: ${{ steps.res.outputs.build }}
+          MANIFEST_ID: ${{ steps.manifest.outputs.manifest-id }}
+          BUNDLE: ${{ steps.bundle.outputs.bundle }}
+          MODIFIERS_SOURCE: ${{ steps.modifiers.outputs.source }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          # the locale decides the decimal separator, so pin it for stable output
+          file_size() { LC_ALL=C numfmt --to=iec --format='%.1f' "$(stat -c %s "$1")"; }
+          dir_size() { LC_ALL=C numfmt --to=iec --format='%.1f' "$(du -sb "$1" | cut -f1)"; }
+          {
+            echo "# Game data $VERSION"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Artifact | [\`$BUNDLE\`]($ARTIFACT_URL) |"
+            echo "| Size | $(file_size "$BUNDLE") |"
+            echo "| Expires | in $ARTIFACT_RETENTION_DAYS days |"
+            echo "| Game version | \`$VERSION\` |"
+            echo "| Game build | \`$BUILD\` |"
+            echo "| Client depot | \`$WOWS_CLIENT_DEPOT\` (manifest \`$MANIFEST_ID\`) |"
+            echo "| Res depot | \`$WOWS_RES_DEPOT\` |"
+            echo "| Modifiers source | $MODIFIERS_SOURCE |"
+            if [ -n "$ARTIFACT_DIGEST" ]; then
+              echo "| Artifact sha256 | \`$ARTIFACT_DIGEST\` |"
+            fi
+            echo
+            echo "## Contents"
+            echo
+            echo "| Entry | Size |"
+            echo "| --- | --- |"
+            echo "| \`texts/\` | $(dir_size bundle/texts) in $(find bundle/texts -type f | wc -l) files |"
+            echo "| \`GameParams.data\` | $(file_size bundle/GameParams.data) |"
+            echo "| \`Modifiers.json\` | $(file_size bundle/Modifiers.json) |"
+            echo "| \`shipstree_EU.xml\` | $(file_size bundle/shipstree_EU.xml) |"
+            echo
+            echo "## Tools"
+            echo
+            echo "| Tool | Version |"
+            echo "| --- | --- |"
+            echo "| DepotDownloader | \`$DEPOT_DOWNLOADER_TAG\` |"
+            echo "| wowsunpack | \`$WOWS_TOOLKIT_TAG\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
