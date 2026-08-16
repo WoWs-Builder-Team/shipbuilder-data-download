@@ -54,7 +54,9 @@ runs:
         DIRECTORY: ${{ inputs.directory }}
         MANIFEST_ONLY: ${{ inputs.manifest-only }}
       run: |
-        args=(-app "$APP" -depot "$DEPOT" -username "$USERNAME" -password "$PASSWORD")
+        # remember-password stores a login token in account.config, so the
+        # following invocations reuse it instead of logging in with the password
+        args=(-app "$APP" -depot "$DEPOT" -username "$USERNAME" -password "$PASSWORD" -remember-password)
         if [ -n "$MANIFEST" ]; then
           args+=(-manifest "$MANIFEST")
         fi
