@@ -1,0 +1,4 @@
+# IntelliJ directories and files
+.idea/
+*.iml
+*.ipr
