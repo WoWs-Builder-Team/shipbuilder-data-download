@@ -204,6 +204,7 @@ jobs:
           FILES: ${{ steps.previews.outputs.files }}
         run: |
           rm -rf bundle
+          mkdir -p bundle
           find "$OUT_DIR" -type f -name 'P*.png' -exec cp -t bundle/ {} + || true
           count=$(find bundle -type f | wc -l)
           if [ "$count" -ne "$FILES" ]; then
