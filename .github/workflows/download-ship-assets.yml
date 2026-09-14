@@ -1,0 +1,208 @@
+name: Download ship assets
+
+on:
+  workflow_call:
+    inputs:
+      game-version:
+        required: true
+        type: string
+        description: The current version of the game
+      previous-bundle-url:
+        required: false
+        type: string
+        default: https://cdn.wowssb.com/images/ship/ship.zip
+        description: Url of the published ship image bundle the diff bundle is built against
+    secrets:
+      STEAM_USERNAME:
+        required: true
+        description: Steam username used to download the depots
+      STEAM_PASSWORD:
+        required: true
+        description: Steam password used to download the depots
+    outputs:
+      build:
+        value: ${{ jobs.download-ship-assets.outputs.build }}
+        description: Game build number the previews were extracted from
+      manifest-id:
+        value: ${{ jobs.download-ship-assets.outputs.manifest-id }}
+        description: Id of the client depot manifest the download was pinned to
+      files:
+        value: ${{ jobs.download-ship-assets.outputs.files }}
+        description: Number of extracted ship previews
+      bundle:
+        value: ${{ jobs.download-ship-assets.outputs.bundle }}
+        description: File name of the created full bundle
+      size:
+        value: ${{ jobs.download-ship-assets.outputs.size }}
+        description: Human readable size of the created full bundle
+      contents:
+        value: ${{ jobs.download-ship-assets.outputs.contents }}
+        description: Markdown table rows describing the top level entries of the full bundle
+      url:
+        value: ${{ jobs.download-ship-assets.outputs.url }}
+        description: Url of the uploaded full bundle artifact
+      digest:
+        value: ${{ jobs.download-ship-assets.outputs.digest }}
+        description: Sha256 digest of the uploaded full bundle artifact
+      new-files:
+        value: ${{ jobs.download-ship-assets.outputs.new-files }}
+        description: Number of previews that are not part of the previous bundle
+      diff-bundle:
+        value: ${{ jobs.download-ship-assets.outputs.diff-bundle }}
+        description: File name of the created diff bundle, empty if no preview is new
+      diff-size:
+        value: ${{ jobs.download-ship-assets.outputs.diff-size }}
+        description: Human readable size of the created diff bundle
+      diff-url:
+        value: ${{ jobs.download-ship-assets.outputs.diff-url }}
+        description: Url of the uploaded diff bundle artifact
+      diff-digest:
+        value: ${{ jobs.download-ship-assets.outputs.diff-digest }}
+        description: Sha256 digest of the uploaded diff bundle artifact
+      previous-url:
+        value: ${{ jobs.download-ship-assets.outputs.previous-url }}
+        description: Url of the bundle the diff was built against
+      previous-files:
+        value: ${{ jobs.download-ship-assets.outputs.previous-files }}
+        description: Number of images in the bundle the diff was built against
+
+env:
+  # only used here, unlike the constants the shared config action holds
+  SHIP_PREVIEWS_PATTERN: '*/ship_previews/P*.png'
+
+jobs:
+  download-ship-assets:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.previews.outputs.build }}
+      manifest-id: ${{ steps.previews.outputs.manifest-id }}
+      files: ${{ steps.previews.outputs.files }}
+      bundle: ${{ steps.bundle.outputs.bundle }}
+      size: ${{ steps.bundle.outputs.size }}
+      contents: ${{ steps.bundle.outputs.contents }}
+      url: ${{ steps.bundle.outputs.url }}
+      digest: ${{ steps.bundle.outputs.digest }}
+      new-files: ${{ steps.diff.outputs.files }}
+      diff-bundle: ${{ steps.diff-bundle.outputs.bundle }}
+      diff-size: ${{ steps.diff-bundle.outputs.size }}
+      diff-url: ${{ steps.diff-bundle.outputs.url }}
+      diff-digest: ${{ steps.diff-bundle.outputs.digest }}
+      previous-url: ${{ inputs.previous-bundle-url }}
+      previous-files: ${{ steps.previous.outputs.files }}
+    steps:
+      - name: Check out composite actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Load configuration
+        id: config
+        uses: ./.github/actions/config
+
+      - name: Setup tools
+        id: tools
+        uses: ./.github/actions/setup-tools
+        with:
+          depot-downloader-tag: ${{ steps.config.outputs.depot-downloader-tag }}
+          wows-toolkit-tag: ${{ steps.config.outputs.wows-toolkit-tag }}
+          wows-toolkit-sha256: ${{ steps.config.outputs.wows-toolkit-sha256 }}
+
+      - name: Extract ship previews
+        id: previews
+        uses: ./.github/actions/extract-client-files
+        with:
+          downloader: ${{ steps.tools.outputs.downloader }}
+          wowsunpack: ${{ steps.tools.outputs.wowsunpack }}
+          app: ${{ steps.config.outputs.app }}
+          depot: ${{ steps.config.outputs.client-depot }}
+          username: ${{ secrets.STEAM_USERNAME }}
+          password: ${{ secrets.STEAM_PASSWORD }}
+          pattern: ${{ env.SHIP_PREVIEWS_PATTERN }}
+          directory: ${{ steps.config.outputs.gamedata }}
+
+      - name: Stage ship previews
+        env:
+          OUT_DIR: ${{ steps.previews.outputs.out-dir }}
+          FILES: ${{ steps.previews.outputs.files }}
+        run: |
+          rm -rf bundle
+          mkdir -p bundle
+          find "$OUT_DIR" -type f -name 'P*.png' -exec cp -t bundle/ {} + || true
+          count=$(find bundle -type f | wc -l)
+          if [ "$count" -ne "$FILES" ]; then
+            echo "::error::Staged $count of $FILES previews, file names are not unique across packages"
+            exit 1
+          fi
+          echo "Staged $count ship previews"
+
+      - name: Bundle ship previews
+        id: bundle
+        uses: ./.github/actions/bundle-artifact
+        with:
+          directory: bundle
+          bundle: ${{ inputs.game-version }}-ship-previews.zip
+          artifact-name: ship-previews
+          retention-days: ${{ steps.config.outputs.retention-days }}
+          # pngs are already compressed, so deflating them harder only burns time
+          compression: 1
+          # a row per preview would drown the summary, the file count covers it
+          describe-contents: false
+
+      - name: Download previous ship bundle
+        id: previous
+        env:
+          URL: ${{ inputs.previous-bundle-url }}
+        run: |
+          if ! curl -fsSL --retry 3 --retry-all-errors "$URL" -o previous.zip; then
+            echo "::error::Could not download the previous ship bundle from $URL"
+            exit 1
+          fi
+          # only the names are needed, so the archive is listed instead of extracted
+          if ! unzip -Z1 previous.zip > previous-entries.txt; then
+            echo "::error::$URL is not a readable zip archive"
+            exit 1
+          fi
+          # the collation has to match the one the comparison below runs in
+          sed -e 's#.*/##' -e '/^$/d' previous-entries.txt | LC_ALL=C sort -u > previous-files.txt
+          count=$(wc -l < previous-files.txt)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::The previous ship bundle from $URL is empty"
+            exit 1
+          fi
+          echo "Downloaded previous bundle ($(du -h previous.zip | cut -f1), $count images) from $URL"
+          echo "files=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Stage new ship previews
+        id: diff
+        run: |
+          # comm rejects input that is not sorted in its own collation, so pin both
+          export LC_ALL=C
+          rm -rf diff
+          mkdir -p diff
+          # the published bundle is reprocessed rather than a copy of the raw previews,
+          # so a preview counts as new when its name is missing, not when bytes differ
+          (cd bundle && ls -1) | sort > current-files.txt
+          comm -23 current-files.txt previous-files.txt > new-files.txt
+          while IFS= read -r name; do
+            cp "bundle/$name" diff/
+          done < new-files.txt
+          count=$(find diff -type f | wc -l)
+          echo "files=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -eq 0 ]; then
+            echo "No ship previews are new compared to the previous bundle"
+          else
+            echo "Staged $count new ship preview(s):"
+            cat new-files.txt
+          fi
+
+      - name: Bundle new ship previews
+        id: diff-bundle
+        if: ${{ steps.diff.outputs.files != '0' }}
+        uses: ./.github/actions/bundle-artifact
+        with:
+          directory: diff
+          bundle: ${{ inputs.game-version }}.zip
+          artifact-name: ship-previews-diff
+          retention-days: ${{ steps.config.outputs.retention-days }}
+          # pngs are already compressed, so deflating them harder only burns time
+          compression: 1
+          # a row per preview would drown the summary, the file count covers it
+          describe-contents: false

@@ -1,0 +1,48 @@
+name: Workflow configuration
+description: Single definition of the app, depot and tool constants the workflows share
+
+outputs:
+  app:
+    value: ${{ steps.config.outputs.app }}
+    description: Id of the steam app
+  client-depot:
+    value: ${{ steps.config.outputs.client-depot }}
+    description: Id of the steam depot holding the game client
+  res-depot:
+    value: ${{ steps.config.outputs.res-depot }}
+    description: Id of the steam depot holding the res files
+  gamedata:
+    value: ${{ steps.config.outputs.gamedata }}
+    description: Directory the depot files are downloaded into
+  retention-days:
+    value: ${{ steps.config.outputs.retention-days }}
+    description: Number of days the uploaded artifacts are kept
+  depot-downloader-tag:
+    value: ${{ steps.config.outputs.depot-downloader-tag }}
+    description: Release tag of SteamRE/DepotDownloader to use
+  wows-toolkit-tag:
+    value: ${{ steps.config.outputs.wows-toolkit-tag }}
+    description: Release tag of landaire/wows-toolkit to use
+  wows-toolkit-sha256:
+    value: ${{ steps.config.outputs.wows-toolkit-sha256 }}
+    description: Expected sha256 checksum of the wows-toolkit release asset
+
+runs:
+  using: composite
+  steps:
+    # a workflow env block is not visible to a called workflow and a reusable
+    # workflow call cannot pass env along, so the constants live in an action
+    # that every job reads them from instead
+    - id: config
+      shell: bash
+      run: |
+        {
+          echo "app=552990"
+          echo "client-depot=552993"
+          echo "res-depot=552994"
+          echo "gamedata=gamedata"
+          echo "retention-days=3"
+          echo "depot-downloader-tag=DepotDownloader_3.4.0"
+          echo "wows-toolkit-tag=v1.0.1"
+          echo "wows-toolkit-sha256=d03ac918b7ec9514bb59fa49432132c69103ecb19f121c74d0ed7da2d438cf5b"
+        } >> "$GITHUB_OUTPUT"

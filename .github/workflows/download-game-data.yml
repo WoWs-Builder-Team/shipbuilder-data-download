@@ -16,224 +16,44 @@ on:
         default: false
         description: Optional parameter to select if image assets should be extracted
 
-env:
-  WOWS_APP: 552990
-  WOWS_CLIENT_DEPOT: 552993
-  WOWS_RES_DEPOT: 552994
-  GAMEDATA: gamedata
-  ARTIFACT_RETENTION_DAYS: 3
-  DEPOT_DOWNLOADER_TAG: DepotDownloader_3.4.0
-  WOWS_TOOLKIT_TAG: v1.0.1
-  WOWS_TOOLKIT_TOOLS_SHA256: d03ac918b7ec9514bb59fa49432132c69103ecb19f121c74d0ed7da2d438cf5b
-  SHIP_PREVIEWS_PATTERN: '*/ship_previews/P*.png'
-
 jobs:
   download-data:
-    runs-on: ubuntu-latest
-    outputs:
-      build: ${{ steps.gameparams.outputs.build }}
-      manifest-id: ${{ steps.gameparams.outputs.manifest-id }}
-      modifiers-source: ${{ steps.modifiers.outputs.source }}
-      bundle: ${{ steps.bundle.outputs.bundle }}
-      size: ${{ steps.bundle.outputs.size }}
-      contents: ${{ steps.bundle.outputs.contents }}
-      url: ${{ steps.bundle.outputs.url }}
-      digest: ${{ steps.bundle.outputs.digest }}
-    steps:
-      - name: Check out composite actions
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup tools
-        id: tools
-        uses: ./.github/actions/setup-tools
-        with:
-          depot-downloader-tag: ${{ env.DEPOT_DOWNLOADER_TAG }}
-          wows-toolkit-tag: ${{ env.WOWS_TOOLKIT_TAG }}
-          wows-toolkit-sha256: ${{ env.WOWS_TOOLKIT_TOOLS_SHA256 }}
-
-      - name: Extract GameParams.data
-        id: gameparams
-        uses: ./.github/actions/extract-client-files
-        with:
-          downloader: ${{ steps.tools.outputs.downloader }}
-          wowsunpack: ${{ steps.tools.outputs.wowsunpack }}
-          app: ${{ env.WOWS_APP }}
-          depot: ${{ env.WOWS_CLIENT_DEPOT }}
-          username: ${{ secrets.STEAM_USERNAME }}
-          password: ${{ secrets.STEAM_PASSWORD }}
-          pattern: content/GameParams.data
-          directory: ${{ env.GAMEDATA }}
-
-      - name: Locate GameParams.data
-        id: locate
-        env:
-          OUT_DIR: ${{ steps.gameparams.outputs.out-dir }}
-        run: |
-          gameparams=$(find "$OUT_DIR" -type f -name GameParams.data | head -n 1)
-          if [ -z "$gameparams" ]; then
-            echo "::error::GameParams.data was not extracted"
-            exit 1
-          fi
-          echo "Extracted $gameparams ($(du -h "$gameparams" | cut -f1))"
-          echo "gameparams=$gameparams" >> "$GITHUB_OUTPUT"
-
-      - name: Create res download filter
-        id: res
-        env:
-          BUILD: ${{ steps.gameparams.outputs.build }}
-        run: |
-          {
-            echo "regex:^bin/$BUILD/res/texts/.*"
-            echo "bin/$BUILD/res/gui/lobby/shipstree_EU.xml"
-          } > res-files.txt
-          echo "filter=res-files.txt" >> "$GITHUB_OUTPUT"
-          echo "texts=$GAMEDATA/bin/$BUILD/res/texts" >> "$GITHUB_OUTPUT"
-          echo "shipstree=$GAMEDATA/bin/$BUILD/res/gui/lobby/shipstree_EU.xml" >> "$GITHUB_OUTPUT"
-
-      - name: Download res files
-        uses: ./.github/actions/download-depot
-        with:
-          downloader: ${{ steps.tools.outputs.downloader }}
-          app: ${{ env.WOWS_APP }}
-          depot: ${{ env.WOWS_RES_DEPOT }}
-          username: ${{ secrets.STEAM_USERNAME }}
-          password: ${{ secrets.STEAM_PASSWORD }}
-          filelist: ${{ steps.res.outputs.filter }}
-          directory: ${{ env.GAMEDATA }}
-
-      - name: Verify res files
-        env:
-          TEXTS: ${{ steps.res.outputs.texts }}
-          SHIPSTREE: ${{ steps.res.outputs.shipstree }}
-        run: |
-          if [ ! -d "$TEXTS" ] || [ -z "$(ls -A "$TEXTS")" ]; then
-            echo "::error::No files were downloaded below $TEXTS"
-            exit 1
-          fi
-          if [ ! -f "$SHIPSTREE" ]; then
-            echo "::error::$SHIPSTREE was not downloaded"
-            exit 1
-          fi
-          echo "Downloaded $(find "$TEXTS" -type f | wc -l) files below $TEXTS"
-
-      - name: Download Modifiers.json
-        id: modifiers
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MODIFIERS_URL: ${{ inputs.modifiers-url }}
-        run: |
-          if [ -n "$MODIFIERS_URL" ]; then
-            echo "Using custom modifiers file: $MODIFIERS_URL"
-            curl -fsSL "$MODIFIERS_URL" -o Modifiers.json
-            echo "source=$MODIFIERS_URL" >> "$GITHUB_OUTPUT"
-          else
-            # without a ref, the contents api serves the default branch
-            echo "Using Modifiers.json from the DataConverter default branch"
-            gh api repos/WoWs-Builder-Team/DataConverter/contents/DataConverter/JsonData/Modifiers.json \
-              -H "Accept: application/vnd.github.raw" > Modifiers.json
-            echo "source=WoWs-Builder-Team/DataConverter (default branch)" >> "$GITHUB_OUTPUT"
-          fi
-          jq empty Modifiers.json
-          echo "Downloaded Modifiers.json ($(du -h Modifiers.json | cut -f1))"
-          echo "modifiers=Modifiers.json" >> "$GITHUB_OUTPUT"
-
-      - name: Stage game data
-        env:
-          TEXTS: ${{ steps.res.outputs.texts }}
-          SHIPSTREE: ${{ steps.res.outputs.shipstree }}
-          GAMEPARAMS: ${{ steps.locate.outputs.gameparams }}
-          MODIFIERS: ${{ steps.modifiers.outputs.modifiers }}
-        run: |
-          rm -rf bundle
-          mkdir -p bundle
-          cp -r "$TEXTS" bundle/texts
-          cp "$GAMEPARAMS" bundle/GameParams.data
-          cp "$MODIFIERS" bundle/Modifiers.json
-          cp "$SHIPSTREE" bundle/shipstree_EU.xml
-
-      - name: Bundle game data
-        id: bundle
-        uses: ./.github/actions/bundle-artifact
-        with:
-          directory: bundle
-          bundle: ${{ inputs.game-version }}.zip
-          artifact-name: game-data
-          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+    uses: ./.github/workflows/download-data.yml
+    with:
+      game-version: ${{ inputs.game-version }}
+      modifiers-url: ${{ inputs.modifiers-url }}
+    secrets: inherit
 
   download-ship-assets:
-    runs-on: ubuntu-latest
+    # the data job logs in with the password and caches the login token, so running
+    # after it lets this job reuse the token instead of triggering a second login
     needs: download-data
     if: ${{ inputs.extract-image-assets }}
-    outputs:
-      build: ${{ steps.previews.outputs.build }}
-      manifest-id: ${{ steps.previews.outputs.manifest-id }}
-      files: ${{ steps.previews.outputs.files }}
-      bundle: ${{ steps.bundle.outputs.bundle }}
-      size: ${{ steps.bundle.outputs.size }}
-      contents: ${{ steps.bundle.outputs.contents }}
-      url: ${{ steps.bundle.outputs.url }}
-      digest: ${{ steps.bundle.outputs.digest }}
-    steps:
-      - name: Check out composite actions
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup tools
-        id: tools
-        uses: ./.github/actions/setup-tools
-        with:
-          depot-downloader-tag: ${{ env.DEPOT_DOWNLOADER_TAG }}
-          wows-toolkit-tag: ${{ env.WOWS_TOOLKIT_TAG }}
-          wows-toolkit-sha256: ${{ env.WOWS_TOOLKIT_TOOLS_SHA256 }}
-
-      - name: Extract ship previews
-        id: previews
-        uses: ./.github/actions/extract-client-files
-        with:
-          downloader: ${{ steps.tools.outputs.downloader }}
-          wowsunpack: ${{ steps.tools.outputs.wowsunpack }}
-          app: ${{ env.WOWS_APP }}
-          depot: ${{ env.WOWS_CLIENT_DEPOT }}
-          username: ${{ secrets.STEAM_USERNAME }}
-          password: ${{ secrets.STEAM_PASSWORD }}
-          pattern: ${{ env.SHIP_PREVIEWS_PATTERN }}
-          directory: ${{ env.GAMEDATA }}
-
-      - name: Stage ship previews
-        env:
-          OUT_DIR: ${{ steps.previews.outputs.out-dir }}
-          FILES: ${{ steps.previews.outputs.files }}
-        run: |
-          rm -rf bundle
-          mkdir -p bundle
-          find "$OUT_DIR" -type f -name 'P*.png' -exec cp -t bundle/ {} + || true
-          count=$(find bundle -type f | wc -l)
-          if [ "$count" -ne "$FILES" ]; then
-            echo "::error::Staged $count of $FILES previews, file names are not unique across packages"
-            exit 1
-          fi
-          echo "Staged $count ship previews"
-
-      - name: Bundle ship previews
-        id: bundle
-        uses: ./.github/actions/bundle-artifact
-        with:
-          directory: bundle
-          bundle: ${{ inputs.game-version }}-ship-previews.zip
-          artifact-name: ship-previews
-          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
-          # pngs are already compressed, so deflating them harder only burns time
-          compression: 1
-          # a row per preview would drown the summary, the file count covers it
-          describe-contents: false
+    uses: ./.github/workflows/download-ship-assets.yml
+    with:
+      game-version: ${{ inputs.game-version }}
+    secrets: inherit
 
   summary:
     runs-on: ubuntu-latest
     needs: [download-data, download-ship-assets]
     if: ${{ !cancelled() && needs.download-data.result == 'success' }}
     steps:
+      - name: Check out composite actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Load configuration
+        id: config
+        uses: ./.github/actions/config
+
       - name: Write job summary
         env:
           VERSION: ${{ inputs.game-version }}
+          RETENTION_DAYS: ${{ steps.config.outputs.retention-days }}
+          CLIENT_DEPOT: ${{ steps.config.outputs.client-depot }}
+          RES_DEPOT: ${{ steps.config.outputs.res-depot }}
+          DEPOT_DOWNLOADER: ${{ steps.config.outputs.depot-downloader-tag }}
+          WOWSUNPACK: ${{ steps.config.outputs.wows-toolkit-tag }}
           BUILD: ${{ needs.download-data.outputs.build }}
           MANIFEST_ID: ${{ needs.download-data.outputs.manifest-id }}
           MODIFIERS_SOURCE: ${{ needs.download-data.outputs.modifiers-source }}
@@ -249,6 +69,13 @@ jobs:
           ASSETS_CONTENTS: ${{ needs.download-ship-assets.outputs.contents }}
           ASSETS_URL: ${{ needs.download-ship-assets.outputs.url }}
           ASSETS_DIGEST: ${{ needs.download-ship-assets.outputs.digest }}
+          ASSETS_NEW_FILES: ${{ needs.download-ship-assets.outputs.new-files }}
+          ASSETS_DIFF_BUNDLE: ${{ needs.download-ship-assets.outputs.diff-bundle }}
+          ASSETS_DIFF_SIZE: ${{ needs.download-ship-assets.outputs.diff-size }}
+          ASSETS_DIFF_URL: ${{ needs.download-ship-assets.outputs.diff-url }}
+          ASSETS_DIFF_DIGEST: ${{ needs.download-ship-assets.outputs.diff-digest }}
+          ASSETS_PREVIOUS_URL: ${{ needs.download-ship-assets.outputs.previous-url }}
+          ASSETS_PREVIOUS_FILES: ${{ needs.download-ship-assets.outputs.previous-files }}
         run: |
           {
             echo "# Game data $VERSION"
@@ -257,11 +84,11 @@ jobs:
             echo "| --- | --- |"
             echo "| Artifact | [\`$BUNDLE\`]($ARTIFACT_URL) |"
             echo "| Size | $BUNDLE_SIZE |"
-            echo "| Expires | in $ARTIFACT_RETENTION_DAYS days |"
+            echo "| Expires | in $RETENTION_DAYS days |"
             echo "| Game version | \`$VERSION\` |"
             echo "| Game build | \`$BUILD\` |"
-            echo "| Client depot | \`$WOWS_CLIENT_DEPOT\` (manifest \`$MANIFEST_ID\`) |"
-            echo "| Res depot | \`$WOWS_RES_DEPOT\` |"
+            echo "| Client depot | \`$CLIENT_DEPOT\` (manifest \`$MANIFEST_ID\`) |"
+            echo "| Res depot | \`$RES_DEPOT\` |"
             echo "| Modifiers source | $MODIFIERS_SOURCE |"
             if [ -n "$ARTIFACT_DIGEST" ]; then
               echo "| Artifact sha256 | \`$ARTIFACT_DIGEST\` |"
@@ -281,7 +108,7 @@ jobs:
                 echo "| --- | --- |"
                 echo "| Artifact | [\`$ASSETS_BUNDLE\`]($ASSETS_URL) |"
                 echo "| Size | $ASSETS_SIZE |"
-                echo "| Expires | in $ARTIFACT_RETENTION_DAYS days |"
+                echo "| Expires | in $RETENTION_DAYS days |"
                 echo "| Previews | $ASSETS_FILES files |"
                 if [ -n "$ASSETS_DIGEST" ]; then
                   echo "| Artifact sha256 | \`$ASSETS_DIGEST\` |"
@@ -293,6 +120,24 @@ jobs:
                   echo "| Entry | Size |"
                   echo "| --- | --- |"
                   echo "$ASSETS_CONTENTS"
+                fi
+                echo
+                echo "## New previews"
+                echo
+                echo "Compared against [\`$ASSETS_PREVIOUS_URL\`]($ASSETS_PREVIOUS_URL) ($ASSETS_PREVIOUS_FILES images)."
+                echo
+                if [ -n "$ASSETS_DIFF_BUNDLE" ]; then
+                  echo "| | |"
+                  echo "| --- | --- |"
+                  echo "| Artifact | [\`$ASSETS_DIFF_BUNDLE\`]($ASSETS_DIFF_URL) |"
+                  echo "| Size | $ASSETS_DIFF_SIZE |"
+                  echo "| Expires | in $RETENTION_DAYS days |"
+                  echo "| New previews | $ASSETS_NEW_FILES files |"
+                  if [ -n "$ASSETS_DIFF_DIGEST" ]; then
+                    echo "| Artifact sha256 | \`$ASSETS_DIFF_DIGEST\` |"
+                  fi
+                else
+                  echo "No preview is new, so no diff bundle was created."
                 fi
                 ;;
               skipped|'')
@@ -308,6 +153,6 @@ jobs:
             echo
             echo "| Tool | Version |"
             echo "| --- | --- |"
-            echo "| DepotDownloader | \`$DEPOT_DOWNLOADER_TAG\` |"
-            echo "| wowsunpack | \`$WOWS_TOOLKIT_TAG\` |"
+            echo "| DepotDownloader | \`$DEPOT_DOWNLOADER\` |"
+            echo "| wowsunpack | \`$WOWSUNPACK\` |"
           } >> "$GITHUB_STEP_SUMMARY"

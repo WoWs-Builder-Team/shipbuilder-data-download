@@ -1,0 +1,185 @@
+name: Download data
+
+on:
+  workflow_call:
+    inputs:
+      game-version:
+        required: true
+        type: string
+        description: The current version of the game
+      modifiers-url:
+        required: false
+        type: string
+        description: Optional URL to a custom Modifiers.json, defaults to the one from the DataConverter repository
+    secrets:
+      STEAM_USERNAME:
+        required: true
+        description: Steam username used to download the depots
+      STEAM_PASSWORD:
+        required: true
+        description: Steam password used to download the depots
+    outputs:
+      build:
+        value: ${{ jobs.download-data.outputs.build }}
+        description: Game build number the data was extracted from
+      manifest-id:
+        value: ${{ jobs.download-data.outputs.manifest-id }}
+        description: Id of the client depot manifest the download was pinned to
+      modifiers-source:
+        value: ${{ jobs.download-data.outputs.modifiers-source }}
+        description: Source the Modifiers.json was downloaded from
+      bundle:
+        value: ${{ jobs.download-data.outputs.bundle }}
+        description: File name of the created bundle
+      size:
+        value: ${{ jobs.download-data.outputs.size }}
+        description: Human readable size of the created bundle
+      contents:
+        value: ${{ jobs.download-data.outputs.contents }}
+        description: Markdown table rows describing the top level entries of the bundle
+      url:
+        value: ${{ jobs.download-data.outputs.url }}
+        description: Url of the uploaded artifact
+      digest:
+        value: ${{ jobs.download-data.outputs.digest }}
+        description: Sha256 digest of the uploaded artifact
+
+jobs:
+  download-data:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.gameparams.outputs.build }}
+      manifest-id: ${{ steps.gameparams.outputs.manifest-id }}
+      modifiers-source: ${{ steps.modifiers.outputs.source }}
+      bundle: ${{ steps.bundle.outputs.bundle }}
+      size: ${{ steps.bundle.outputs.size }}
+      contents: ${{ steps.bundle.outputs.contents }}
+      url: ${{ steps.bundle.outputs.url }}
+      digest: ${{ steps.bundle.outputs.digest }}
+    steps:
+      - name: Check out composite actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Load configuration
+        id: config
+        uses: ./.github/actions/config
+
+      - name: Setup tools
+        id: tools
+        uses: ./.github/actions/setup-tools
+        with:
+          depot-downloader-tag: ${{ steps.config.outputs.depot-downloader-tag }}
+          wows-toolkit-tag: ${{ steps.config.outputs.wows-toolkit-tag }}
+          wows-toolkit-sha256: ${{ steps.config.outputs.wows-toolkit-sha256 }}
+
+      - name: Extract GameParams.data
+        id: gameparams
+        uses: ./.github/actions/extract-client-files
+        with:
+          downloader: ${{ steps.tools.outputs.downloader }}
+          wowsunpack: ${{ steps.tools.outputs.wowsunpack }}
+          app: ${{ steps.config.outputs.app }}
+          depot: ${{ steps.config.outputs.client-depot }}
+          username: ${{ secrets.STEAM_USERNAME }}
+          password: ${{ secrets.STEAM_PASSWORD }}
+          pattern: content/GameParams.data
+          directory: ${{ steps.config.outputs.gamedata }}
+
+      - name: Locate GameParams.data
+        id: locate
+        env:
+          OUT_DIR: ${{ steps.gameparams.outputs.out-dir }}
+        run: |
+          gameparams=$(find "$OUT_DIR" -type f -name GameParams.data | head -n 1)
+          if [ -z "$gameparams" ]; then
+            echo "::error::GameParams.data was not extracted"
+            exit 1
+          fi
+          echo "Extracted $gameparams ($(du -h "$gameparams" | cut -f1))"
+          echo "gameparams=$gameparams" >> "$GITHUB_OUTPUT"
+
+      - name: Create res download filter
+        id: res
+        env:
+          BUILD: ${{ steps.gameparams.outputs.build }}
+          GAMEDATA: ${{ steps.config.outputs.gamedata }}
+        run: |
+          {
+            echo "regex:^bin/$BUILD/res/texts/.*"
+            echo "bin/$BUILD/res/gui/lobby/shipstree_EU.xml"
+          } > res-files.txt
+          {
+            echo "filter=res-files.txt"
+            echo "texts=$GAMEDATA/bin/$BUILD/res/texts"
+            echo "shipstree=$GAMEDATA/bin/$BUILD/res/gui/lobby/shipstree_EU.xml"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download res files
+        uses: ./.github/actions/download-depot
+        with:
+          downloader: ${{ steps.tools.outputs.downloader }}
+          app: ${{ steps.config.outputs.app }}
+          depot: ${{ steps.config.outputs.res-depot }}
+          username: ${{ secrets.STEAM_USERNAME }}
+          password: ${{ secrets.STEAM_PASSWORD }}
+          filelist: ${{ steps.res.outputs.filter }}
+          directory: ${{ steps.config.outputs.gamedata }}
+
+      - name: Verify res files
+        env:
+          TEXTS: ${{ steps.res.outputs.texts }}
+          SHIPSTREE: ${{ steps.res.outputs.shipstree }}
+        run: |
+          if [ ! -d "$TEXTS" ] || [ -z "$(ls -A "$TEXTS")" ]; then
+            echo "::error::No files were downloaded below $TEXTS"
+            exit 1
+          fi
+          if [ ! -f "$SHIPSTREE" ]; then
+            echo "::error::$SHIPSTREE was not downloaded"
+            exit 1
+          fi
+          echo "Downloaded $(find "$TEXTS" -type f | wc -l) files below $TEXTS"
+
+      - name: Download Modifiers.json
+        id: modifiers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODIFIERS_URL: ${{ inputs.modifiers-url }}
+        run: |
+          if [ -n "$MODIFIERS_URL" ]; then
+            echo "Using custom modifiers file: $MODIFIERS_URL"
+            curl -fsSL "$MODIFIERS_URL" -o Modifiers.json
+            echo "source=$MODIFIERS_URL" >> "$GITHUB_OUTPUT"
+          else
+            # without a ref, the contents api serves the default branch
+            echo "Using Modifiers.json from the DataConverter default branch"
+            gh api repos/WoWs-Builder-Team/DataConverter/contents/DataConverter/JsonData/Modifiers.json \
+              -H "Accept: application/vnd.github.raw" > Modifiers.json
+            echo "source=WoWs-Builder-Team/DataConverter (default branch)" >> "$GITHUB_OUTPUT"
+          fi
+          jq empty Modifiers.json
+          echo "Downloaded Modifiers.json ($(du -h Modifiers.json | cut -f1))"
+          echo "modifiers=Modifiers.json" >> "$GITHUB_OUTPUT"
+
+      - name: Stage game data
+        env:
+          TEXTS: ${{ steps.res.outputs.texts }}
+          SHIPSTREE: ${{ steps.res.outputs.shipstree }}
+          GAMEPARAMS: ${{ steps.locate.outputs.gameparams }}
+          MODIFIERS: ${{ steps.modifiers.outputs.modifiers }}
+        run: |
+          rm -rf bundle
+          mkdir -p bundle
+          cp -r "$TEXTS" bundle/texts
+          cp "$GAMEPARAMS" bundle/GameParams.data
+          cp "$MODIFIERS" bundle/Modifiers.json
+          cp "$SHIPSTREE" bundle/shipstree_EU.xml
+
+      - name: Bundle game data
+        id: bundle
+        uses: ./.github/actions/bundle-artifact
+        with:
+          directory: bundle
+          bundle: ${{ inputs.game-version }}.zip
+          artifact-name: game-data
+          retention-days: ${{ steps.config.outputs.retention-days }}
