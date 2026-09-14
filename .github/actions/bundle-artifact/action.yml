@@ -1,0 +1,93 @@
+name: Bundle artifact
+description: Zips a staging directory, uploads it as a workflow artifact and describes its contents
+
+inputs:
+  directory:
+    required: true
+    description: Staging directory whose contents make up the bundle
+  bundle:
+    required: true
+    description: File name of the zip to create
+  artifact-name:
+    required: true
+    description: Name of the workflow artifact
+  retention-days:
+    required: false
+    default: '3'
+    description: Number of days the artifact is kept
+  compression:
+    required: false
+    default: '9'
+    description: Zip compression level, lower is faster
+  describe-contents:
+    required: false
+    default: 'true'
+    description: Describe the top level entries of the bundle, not recommended for flat bundles with many files
+
+outputs:
+  bundle:
+    value: ${{ steps.zip.outputs.bundle }}
+    description: Path to the created zip
+  size:
+    value: ${{ steps.zip.outputs.size }}
+    description: Human readable size of the created zip
+  contents:
+    value: ${{ steps.zip.outputs.contents }}
+    description: Markdown table rows describing the top level entries of the bundle, empty if not requested
+  url:
+    value: ${{ steps.upload.outputs.artifact-url }}
+    description: Url of the uploaded artifact
+  digest:
+    value: ${{ steps.upload.outputs.artifact-digest }}
+    description: Sha256 digest of the uploaded artifact
+
+runs:
+  using: composite
+  steps:
+    - name: Create bundle
+      id: zip
+      shell: bash
+      env:
+        DIRECTORY: ${{ inputs.directory }}
+        BUNDLE: ${{ inputs.bundle }}
+        COMPRESSION: ${{ inputs.compression }}
+        DESCRIBE_CONTENTS: ${{ inputs.describe-contents }}
+      run: |
+        # the locale decides the decimal separator, so pin it for stable output
+        file_size() { LC_ALL=C numfmt --to=iec --format='%.1f' "$(stat -c %s "$1")"; }
+        dir_size() { LC_ALL=C numfmt --to=iec --format='%.1f' "$(du -sb "$1" | cut -f1)"; }
+        if [ -z "$(ls -A "$DIRECTORY" 2> /dev/null)" ]; then
+          echo "::error::Nothing to bundle, $DIRECTORY is empty or missing"
+          exit 1
+        fi
+        bundle_path="$PWD/$BUNDLE"
+        rm -f "$bundle_path"
+        (cd "$DIRECTORY" && zip "-$COMPRESSION" -r -q "$bundle_path" .)
+        echo "Created $BUNDLE ($(file_size "$BUNDLE"))"
+        echo "bundle=$BUNDLE" >> "$GITHUB_OUTPUT"
+        echo "size=$(file_size "$BUNDLE")" >> "$GITHUB_OUTPUT"
+        if [ "$DESCRIBE_CONTENTS" = "true" ]; then
+          {
+            echo "contents<<EOF"
+            for entry in "$DIRECTORY"/*; do
+              name=$(basename "$entry")
+              if [ -d "$entry" ]; then
+                echo "| \`$name/\` | $(dir_size "$entry") in $(find "$entry" -type f | wc -l) files |"
+              else
+                echo "| \`$name\` | $(file_size "$entry") |"
+              fi
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload bundle
+      id: upload
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.artifact-name }}
+        # uploads the zip as-is, so it does not end up nested in another zip
+        path: ${{ steps.zip.outputs.bundle }}
+        archive: false
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: error

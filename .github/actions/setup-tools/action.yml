@@ -1,0 +1,43 @@
+name: Setup tools
+description: Sets up the DepotDownloader and wowsunpack executables used to fetch and unpack game data
+
+inputs:
+  depot-downloader-tag:
+    required: true
+    description: Release tag of SteamRE/DepotDownloader to use
+  wows-toolkit-tag:
+    required: true
+    description: Release tag of landaire/wows-toolkit to use
+  wows-toolkit-sha256:
+    required: false
+    description: Expected sha256 checksum of the wows-toolkit release asset
+
+outputs:
+  downloader:
+    value: ${{ steps.downloader.outputs.path }}
+    description: Path to the DepotDownloader executable
+  wowsunpack:
+    value: ${{ steps.wowsunpack.outputs.path }}
+    description: Path to the wowsunpack executable
+
+runs:
+  using: composite
+  steps:
+    - name: Setup steam depot downloader
+      id: downloader
+      uses: ./.github/actions/setup-release-tool
+      with:
+        repository: SteamRE/DepotDownloader
+        tag: ${{ inputs.depot-downloader-tag }}
+        asset: DepotDownloader-linux-x64.zip
+        binary: DepotDownloader
+
+    - name: Setup wowsunpack
+      id: wowsunpack
+      uses: ./.github/actions/setup-release-tool
+      with:
+        repository: landaire/wows-toolkit
+        tag: ${{ inputs.wows-toolkit-tag }}
+        asset: wows_toolkit_tools_${{ inputs.wows-toolkit-tag }}_linux64.zip
+        binary: wowsunpack
+        sha256: ${{ inputs.wows-toolkit-sha256 }}

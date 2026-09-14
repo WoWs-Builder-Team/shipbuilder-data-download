@@ -1,0 +1,155 @@
+name: Extract client files
+description: Downloads the depot files backing a glob pattern and extracts the matching files with wowsunpack
+
+inputs:
+  downloader:
+    required: true
+    description: Path to the DepotDownloader executable
+  wowsunpack:
+    required: true
+    description: Path to the wowsunpack executable
+  app:
+    required: true
+    description: Id of the steam app
+  depot:
+    required: true
+    description: Id of the steam depot to download from
+  username:
+    required: true
+    description: Steam username
+  password:
+    required: true
+    description: Steam password
+  pattern:
+    required: true
+    description: Glob matching the files to extract, relative to the game file tree
+  directory:
+    required: false
+    default: gamedata
+    description: Directory to download the depot files into
+  out-dir:
+    required: false
+    default: extracted
+    description: Directory to extract the matching files into
+
+outputs:
+  manifest-id:
+    value: ${{ steps.manifest.outputs.manifest-id }}
+    description: Id of the client depot manifest the download was pinned to
+  build:
+    value: ${{ steps.pkgs.outputs.build }}
+    description: Game build number the idx files belong to
+  idx-dir:
+    value: ${{ steps.pkgs.outputs.idx-dir }}
+    description: Path to the idx directory of the current build
+  out-dir:
+    value: ${{ steps.extract.outputs.out-dir }}
+    description: Directory the matching files were extracted into
+  files:
+    value: ${{ steps.extract.outputs.files }}
+    description: Number of extracted files
+
+runs:
+  using: composite
+  steps:
+    - name: Download manifest file
+      id: manifest
+      uses: ./.github/actions/download-depot
+      with:
+        downloader: ${{ inputs.downloader }}
+        app: ${{ inputs.app }}
+        depot: ${{ inputs.depot }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+        manifest-only: true
+
+    - name: Create idx download filter
+      id: filter
+      shell: bash
+      env:
+        MANIFEST: ${{ steps.manifest.outputs.manifest-file }}
+      run: |
+        grep -oE "bin/[0-9]+/idx/.*" "$MANIFEST" | sort -u > idx-files.txt
+        count=$(wc -l < idx-files.txt)
+        if [ "$count" -eq 0 ]; then
+          echo "::error::No idx files matched in $MANIFEST"
+          exit 1
+        fi
+        echo "Matched $count idx files"
+
+    - name: Download idx files
+      uses: ./.github/actions/download-depot
+      with:
+        downloader: ${{ inputs.downloader }}
+        app: ${{ inputs.app }}
+        depot: ${{ inputs.depot }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+        manifest: ${{ steps.manifest.outputs.manifest-id }}
+        filelist: idx-files.txt
+        directory: ${{ inputs.directory }}
+
+    - name: Find required pkg files
+      id: pkgs
+      shell: bash
+      env:
+        WOWSUNPACK: ${{ inputs.wowsunpack }}
+        GAMEDATA: ${{ inputs.directory }}
+        PATTERN: ${{ inputs.pattern }}
+      run: |
+        idx_dir=$(find "$GAMEDATA/bin" -mindepth 2 -maxdepth 2 -type d -name idx | sort -V | tail -n 1)
+        if [ -z "$idx_dir" ]; then
+          echo "::error::No idx directory found below $GAMEDATA/bin"
+          exit 1
+        fi
+        build=$(basename "$(dirname "$idx_dir")")
+        echo "Using idx directory: $idx_dir (build $build)"
+        echo "idx-dir=$idx_dir" >> "$GITHUB_OUTPUT"
+        echo "build=$build" >> "$GITHUB_OUTPUT"
+        # pkgs strips the leading slash from both sides, so match without one
+        "$WOWSUNPACK" -i "$idx_dir" pkgs "${PATTERN#/}" \
+          | sed -e 's/\r$//' -e '/^$/d' -e 's#^#res_packages/#' \
+          | sort -u > pkg-files.txt
+        count=$(wc -l < pkg-files.txt)
+        if [ "$count" -eq 0 ]; then
+          echo "::error::No pkg files found for ${PATTERN#/} below $idx_dir"
+          exit 1
+        fi
+        echo "Found $count pkg file(s):"
+        cat pkg-files.txt
+
+    - name: Download pkg files
+      uses: ./.github/actions/download-depot
+      with:
+        downloader: ${{ inputs.downloader }}
+        app: ${{ inputs.app }}
+        depot: ${{ inputs.depot }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+        manifest: ${{ steps.manifest.outputs.manifest-id }}
+        filelist: pkg-files.txt
+        directory: ${{ inputs.directory }}
+
+    - name: Extract matching files
+      id: extract
+      shell: bash
+      env:
+        WOWSUNPACK: ${{ inputs.wowsunpack }}
+        GAMEDATA: ${{ inputs.directory }}
+        IDX_DIR: ${{ steps.pkgs.outputs.idx-dir }}
+        PATTERN: ${{ inputs.pattern }}
+        OUT_DIR: ${{ inputs.out-dir }}
+      run: |
+        rm -rf "$OUT_DIR"
+        # extract matches globs against the raw file tree paths, which carry a
+        # leading slash - unlike pkgs, which strips it from both sides
+        "$WOWSUNPACK" --idx-files "$IDX_DIR" --pkg-dir "$GAMEDATA/res_packages" \
+          extract --out-dir "$OUT_DIR" "/${PATTERN#/}"
+        count=$(find "$OUT_DIR" -type f 2> /dev/null | wc -l)
+        if [ "$count" -eq 0 ]; then
+          echo "::error::No files were extracted for /${PATTERN#/}"
+          exit 1
+        fi
+        echo "Extracted $count file(s) into $OUT_DIR ($(du -sh "$OUT_DIR" | cut -f1))"
+        echo "out-dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+        echo "files=$count" >> "$GITHUB_OUTPUT"
