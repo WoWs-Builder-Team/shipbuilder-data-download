@@ -41,3 +41,12 @@ runs:
         asset: wows_toolkit_tools_${{ inputs.wows-toolkit-tag }}_linux64.zip
         binary: wowsunpack
         sha256: ${{ inputs.wows-toolkit-sha256 }}
+
+    - name: Cache steam login token
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.local/share/IsolatedStorage
+        # cache entries are immutable while the token is refreshed on use, so every
+        # job writes its own entry and restores the newest earlier one by prefix
+        key: steam-login-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        restore-keys: steam-login-v1-
